@@ -1,0 +1,146 @@
+
+import cv2
+import numpy as np
+import mss
+import serial
+import pyautogui
+import time
+
+COM_PORT = "COM3"
+BAUD_RATE = 9600
+
+THRESHOLD_VALUE = 100
+MIN_AREA = 18
+MIN_HEIGHT = 10
+COOLDOWN = 0.65
+
+arduino = serial.Serial(COM_PORT, BAUD_RATE, timeout=0.1)
+time.sleep(2)
+
+print("Arduino connected!")
+print("Open Chrome and visit chrome://dino")
+
+last_jump = 0
+armed = True
+clear_frames = 0
+
+try:
+   with mss.MSS() as screen: 
+        monitor = screen.monitors[1]
+
+        screenshot = np.array(screen.grab(monitor))
+        screenshot = cv2.cvtColor(
+            screenshot, cv2.COLOR_BGRA2BGR
+        )
+
+        roi = cv2.selectROI(
+            "Select Detection Area",
+            screenshot,
+            False,
+            False
+        )
+        cv2.destroyWindow("Select Detection Area")
+
+        x, y, w, h = map(int, roi)
+
+        if w == 0 or h == 0:
+            print("No area selected.")
+            raise SystemExit
+
+        print("Detection started!")
+        print("Click the Chrome game window to focus it.")
+
+        while True:
+            screenshot = np.array(screen.grab(monitor))
+            frame = cv2.cvtColor(
+                screenshot, cv2.COLOR_BGRA2BGR
+            )
+
+            crop = frame[y:y+h, x:x+w]
+            gray = cv2.cvtColor(
+                crop, cv2.COLOR_BGR2GRAY
+            )
+
+            _, mask = cv2.threshold(
+                gray,
+                THRESHOLD_VALUE,
+                255,
+                cv2.THRESH_BINARY_INV
+            )
+
+            kernel = np.ones((2, 2), np.uint8)
+            mask = cv2.morphologyEx(
+                mask, cv2.MORPH_OPEN, kernel
+            )
+
+            contours, _ = cv2.findContours(
+                mask,
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            cactus_detected = False
+
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                cx, cy, cw, ch = cv2.boundingRect(contour)
+
+                if area < MIN_AREA:
+                    continue
+
+                if ch < MIN_HEIGHT:
+                    continue
+
+                if ch / max(cw, 1) < 1.0:
+                    continue
+
+                cactus_detected = True
+
+                cv2.rectangle(
+                    crop,
+                    (cx, cy),
+                    (cx + cw, cy + ch),
+                    (0, 255, 0),
+                    2
+                )
+                break
+
+            current_time = time.time()
+
+            if cactus_detected and armed:
+                if current_time - last_jump > COOLDOWN:
+
+                    # Direct keyboard jump
+                    pyautogui.press("space")
+
+                    # Physical servo jump
+                    arduino.write(b'J')
+
+                    print("Cactus detected - JUMP!")
+
+                    last_jump = current_time
+                    armed = False
+                    clear_frames = 0
+
+            if not cactus_detected:
+                if not armed:
+                    clear_frames += 1
+
+                    if clear_frames >= 8:
+                        armed = True
+            else:
+                clear_frames = 0
+
+            cv2.imshow("Cactus Detection", mask)
+            cv2.imshow("Detection Area", crop)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+except KeyboardInterrupt:
+    print("Program stopped.")
+
+finally:
+    arduino.close()
+    cv2.destroyAllWindows()
+    print("Arduino disconnected.")
